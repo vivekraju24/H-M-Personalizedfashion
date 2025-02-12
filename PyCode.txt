@@ -1,0 +1,280 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python Docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+
+# Input data files are available in the read-only "../input/" directory
+# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory
+
+import os
+# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using "Save & Run All" 
+# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session
+
+!wget https://raw.githubusercontent.com/benhamner/Metrics/master/Python/ml_metrics/average_precision.py
+
+!pip install --upgrade implicit
+import os; os.environ['OPENBLAS_NUM_THREADS']='1'
+import numpy as np
+import pandas as pd
+import implicit
+from scipy.sparse import coo_matrix
+from implicit.evaluation import mean_average_precision_at_k
+
+base_path = '../input/h-and-m-personalized-fashion-recommendations/'
+csv_train = f'{base_path}transactions_train.csv'
+csv_sub = f'{base_path}sample_submission.csv'
+csv_users = f'{base_path}customers.csv'
+csv_items = f'{base_path}articles.csv'
+
+transactions = pd.read_csv(csv_train, dtype={'article_id': str}, parse_dates=['t_dat'])
+df_sub = pd.read_csv(csv_sub)
+customers = pd.read_csv(csv_users)
+articles = pd.read_csv(csv_items, dtype={'article_id': str})
+
+df_sub
+
+# helper functions
+from sklearn.base import BaseEstimator, TransformerMixin
+import numpy as np
+from average_precision import apk
+
+# https://www.kaggle.com/c/h-and-m-personalized-fashion-recommendations/discussion/308635
+def customer_hex_id_to_int(series):
+    return series.str[-16:].apply(hex_id_to_int)
+
+def hex_id_to_int(str):
+    return int(str[-16:], 16)
+
+def article_id_str_to_int(series):
+    return series.astype('int32')
+
+def article_id_int_to_str(series):
+    return '0' + series.astype('str')
+
+class Categorize(BaseEstimator, TransformerMixin):
+    def __init__(self, min_examples=0):
+        self.min_examples = min_examples
+        self.categories = []
+        
+    def fit(self, X):
+        for i in range(X.shape[1]):
+            vc = X.iloc[:, i].value_counts()
+            self.categories.append(vc[vc > self.min_examples].index.tolist())
+        return self
+
+    def transform(self, X):
+        data = {X.columns[i]: pd.Categorical(X.iloc[:, i], categories=self.categories[i]).codes for i in range(X.shape[1])}
+        return pd.DataFrame(data=data)
+
+transactions['customer_id'] = customer_hex_id_to_int(transactions['customer_id'])
+transactions.t_dat = pd.to_datetime(transactions.t_dat, format='%Y-%m-%d')
+transactions['week'] = 104 - (transactions.t_dat.max() - transactions.t_dat).dt.days // 7
+
+transactions.article_id = article_id_str_to_int(transactions.article_id)
+articles.article_id = article_id_str_to_int(articles.article_id)
+
+transactions.week = transactions.week.astype('int8')
+transactions.sales_channel_id = transactions.sales_channel_id.astype('int8')
+transactions.price = transactions.price.astype('float32')
+customers.customer_id = customer_hex_id_to_int(customers.customer_id)
+for col in ['FN', 'Active', 'age']:
+    customers[col].fillna(-1, inplace=True)
+    customers[col] = customers[col].astype('int8')
+customers.club_member_status = Categorize().fit_transform(customers[['club_member_status']]).club_member_status
+customers.postal_code = Categorize().fit_transform(customers[['postal_code']]).postal_code
+customers.fashion_news_frequency = Categorize().fit_transform(customers[['fashion_news_frequency']]).fashion_news_frequency
+for col in articles.columns:
+    if articles[col].dtype == 'object':
+        articles[col] = Categorize().fit_transform(articles[[col]])[col]
+for col in articles.columns:
+    if articles[col].dtype == 'int64':
+        articles[col] = articles[col].astype('int32')
+transactions.sort_values(['t_dat', 'customer_id'], inplace=True)
+import numpy as np
+import pandas as pd
+
+def apk(actual, predicted, k=10):
+    """
+    Computes the average precision at k.
+
+    This function computes the average prescision at k between two lists of
+    items.
+
+    Parameters
+    ----------
+    actual : list
+             A list of elements that are to be predicted (order doesn't matter)
+    predicted : list
+                A list of predicted elements (order does matter)
+    k : int, optional
+        The maximum number of predicted elements
+
+    Returns
+    -------
+    score : double
+            The average precision at k over the input lists
+
+    """
+    if len(predicted)>k:
+        predicted = predicted[:k]
+
+    score = 0.0
+    num_hits = 0.0
+
+    for i,p in enumerate(predicted):
+        if p in actual and p not in predicted[:i]:
+            num_hits += 1.0
+            score += num_hits / (i+1.0)
+
+    if not actual:
+        return 0.0
+
+    return score / min(len(actual), k)
+
+def mapk(actual, predicted, k=10):
+    """
+    Computes the mean average precision at k.
+
+    This function computes the mean average prescision at k between two lists
+    of lists of items.
+
+    Parameters
+    ----------
+    actual : list
+             A list of lists of elements that are to be predicted 
+             (order doesn't matter in the lists)
+    predicted : list
+                A list of lists of predicted elements
+                (order matters in the lists)
+    k : int, optional
+        The maximum number of predicted elements
+
+    Returns
+    -------
+    score : double
+            The mean average precision at k over the input lists
+
+    """
+    return np.mean([apk(a,p,k) for a,p in zip(actual, predicted)])
+from sklearn.base import BaseEstimator, TransformerMixin
+def customer_hex_id_to_int(series):
+    return series.str[-16:].apply(hex_id_to_int)
+
+def hex_id_to_int(str):
+    return int(str[-16:], 16)
+
+def article_id_str_to_int(series):
+    return series.astype('int32')
+
+def article_id_int_to_str(series):
+    return '0' + series.astype('str')
+
+class Categorize(BaseEstimator, TransformerMixin):
+    def __init__(self, min_examples=0):
+        self.min_examples = min_examples
+        self.categories = []
+        
+    def fit(self, X):
+        for i in range(X.shape[1]):
+            vc = X.iloc[:, i].value_counts()
+            self.categories.append(vc[vc > self.min_examples].index.tolist())
+        return self
+
+    def transform(self, X):
+        data = {X.columns[i]: pd.Categorical(X.iloc[:, i], categories=self.categories[i]).codes for i in range(X.shape[1])}
+        return pd.DataFrame(data=data)
+
+
+def calculate_apk(list_of_preds, list_of_gts):
+    # for fast validation this can be changed to operate on dicts of {'cust_id_int': [art_id_int, ...]}
+    # using 'data/val_week_purchases_by_cust.pkl'
+    apks = []
+    for preds, gt in zip(list_of_preds, list_of_gts):
+        apks.append(apk(gt, preds, k=12))
+    return np.mean(apks)
+
+def eval_sub(sub_csv, skip_cust_with_no_purchases=True):
+    sub=pd.read_csv(sub_csv)
+    validation_set=pd.read_parquet('data/validation_ground_truth.parquet')
+
+    apks = []
+
+    no_purchases_pattern = []
+    for pred, gt in zip(sub.prediction.str.split(), validation_set.prediction.str.split()):
+        if skip_cust_with_no_purchases and (gt == no_purchases_pattern): continue
+        apks.append(apk(gt, pred, k=12))
+    return np.mean(apks)
+
+transactions
+articles
+
+%%time
+
+c2weeks = transactions.groupby('customer_id')['week'].unique()
+
+transactions.groupby('week')['t_dat'].agg(['min', 'max'])
+
+%%time
+
+c2weeks2shifted_weeks = {}
+
+for c_id, weeks in c2weeks.items():
+    c2weeks2shifted_weeks[c_id] = {}
+    for i in range(weeks.shape[0]-1):
+        c2weeks2shifted_weeks[c_id][weeks[i]] = weeks[i+1]
+    c2weeks2shifted_weeks[c_id][weeks[-1]] = test_week
+
+candidates_last_purchase = transactions.copy()
+%%time
+
+weeks = []
+for i, (c_id, week) in enumerate(zip(transactions['customer_id'], transactions['week'])):
+    weeks.append(c2weeks2shifted_weeks[c_id][week])
+    
+candidates_last_purchase.week=weeks
+
+mean_price = transactions \
+    .groupby(['week', 'article_id'])['price'].mean()
+sales = transactions \
+    .groupby('week')['article_id'].value_counts() \
+    .groupby('week').rank(method='dense', ascending=False) \
+    .groupby('week').head(12).rename('bestseller_rank').astype('int8')
+bestsellers_previous_week = pd.merge(sales, mean_price, on=['week', 'article_id']).reset_index()
+bestsellers_previous_week.week += 1
+unique_transactions = transactions \
+    .groupby(['week', 'customer_id']) \
+    .head(1) \
+    .drop(columns=['article_id', 'price']) \
+    .copy()
+transactions.drop_duplicates(['week', 'customer_id'])
+
+candidates_bestsellers = pd.merge(
+    unique_transactions,
+    bestsellers_previous_week,
+    on='week',
+)
+test_set_transactions = unique_transactions.drop_duplicates('customer_id').reset_index(drop=True)
+test_set_transactions.week = test_week
+candidates_bestsellers_test_week = pd.merge(
+    test_set_transactions,
+    bestsellers_previous_week,
+    on='week'
+)
+candidates_bestsellers = pd.concat([candidates_bestsellers, candidates_bestsellers_test_week])
+candidates_bestsellers.drop(columns='bestseller_rank', inplace=True)
+
+data = pd.concat([transactions, candidates_last_purchase, candidates_bestsellers])
+data.purchased.fillna(0, inplace=True)
+
+data.drop_duplicates(['customer_id', 'article_id', 'week'], inplace=True)
+
+data = pd.merge(
+    data,
+    bestsellers_previous_week[['week', 'article_id', 'bestseller_rank']],
+    on=['week', 'article_id'],
+    how='left'
+)
+
+
